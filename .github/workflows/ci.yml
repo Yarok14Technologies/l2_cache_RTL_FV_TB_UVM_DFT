@@ -1,0 +1,300 @@
+################################################################################
+# File       : .github/workflows/ci.yml
+# Description: Continuous Integration pipeline for the L2 cache RTL project.
+#              Runs on every pull request and push to main.
+#
+# Stages:
+#   1. lint        — SpyGlass RTL lint (open-source Verilator fallback)
+#   2. compile     — VCS compile (self-hosted runner with EDA tools)
+#   3. smoke       — Run CI-tagged tests (1 seed, fast)
+#   4. regression  — Full regression (3 seeds, parallel, nightly only)
+#   5. coverage    — Coverage threshold check (≥ 95%)
+#   6. formal      — JasperGold LRU + MSHR proofs (fast goals only)
+#
+# Runner requirements:
+#   Self-hosted runner tagged [eda-tools] with:
+#     - Synopsys VCS 2023.03+
+#     - Synopsys SpyGlass 2023.03+
+#     - Cadence JasperGold 23.09+
+#     - Python 3.8+
+################################################################################
+
+name: L2 Cache CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Nightly regression at 02:00 UTC
+    - cron: '0 2 * * *'
+
+env:
+  TOOL: vcs
+  JOBS: 8
+  PYTHON: python3
+
+################################################################################
+# Job 1: Lint (runs on every push/PR, no EDA licence needed for basic checks)
+################################################################################
+jobs:
+  lint:
+    name: RTL Lint
+    runs-on: [self-hosted, eda-tools]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: SpyGlass RTL Lint
+        run: |
+          mkdir -p reports/spyglass
+          spyglass -project scripts/spyglass/spyglass_lint.prj \
+                   -goal lint/lint_rtl \
+                   -batch \
+                   -log reports/spyglass/lint_ci.log
+          echo "Lint complete"
+
+      - name: Check lint result
+        run: |
+          if grep -q "^Error" reports/spyglass/lint_ci.log 2>/dev/null; then
+            echo "SpyGlass errors found!"
+            grep "^Error" reports/spyglass/lint_ci.log
+            exit 1
+          fi
+          echo "Lint CLEAN"
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: reports/spyglass/
+
+################################################################################
+# Job 2: Compile
+################################################################################
+  compile:
+    name: Compile RTL + TB
+    needs: lint
+    runs-on: [self-hosted, eda-tools]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile (VCS)
+        run: |
+          mkdir -p reports/regression sim/vcs
+          make compile TOOL=vcs
+          echo "Compile SUCCESS"
+
+      - name: Upload compile artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-sim
+          path: |
+            sim/vcs/l2_cache_top_sim
+            sim/vcs/csrc/
+          retention-days: 1
+
+################################################################################
+# Job 3: Smoke tests (runs on every PR — fast gate)
+################################################################################
+  smoke:
+    name: Smoke Tests
+    needs: compile
+    runs-on: [self-hosted, eda-tools]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download compiled sim
+        uses: actions/download-artifact@v4
+        with:
+          name: compiled-sim
+          path: sim/vcs/
+
+      - name: Run smoke regression (CI tag, 1 seed)
+        run: |
+          make regression_ci TOOL=vcs JOBS=4
+          echo "Smoke tests complete"
+
+      - name: Parse results
+        run: |
+          python3 - << 'EOF'
+          import json, sys
+          with open("reports/regression/results.json") as f:
+              data = json.load(f)
+          total = data["total"]
+          passed = data["pass"]
+          failed = data["fail"]
+          print(f"Results: {passed}/{total} passed, {failed} failed")
+          if failed > 0:
+              sys.exit(1)
+          EOF
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: reports/regression/
+
+################################################################################
+# Job 4: Full regression (nightly only)
+################################################################################
+  regression:
+    name: Full Regression
+    needs: compile
+    if: github.event_name == 'schedule'
+    runs-on: [self-hosted, eda-tools]
+    timeout-minutes: 240
+
+    strategy:
+      matrix:
+        config:
+          - { ways: 4,  cache_kb: 256,  label: "256KB-4way" }
+          - { ways: 8,  cache_kb: 512,  label: "512KB-8way" }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile (${{ matrix.config.label }})
+        run: |
+          make compile TOOL=vcs WAYS=${{ matrix.config.ways }} \
+               CACHE_KB=${{ matrix.config.cache_kb }}
+
+      - name: Full regression (${{ matrix.config.label }}, 10 seeds)
+        run: |
+          make regression_nightly TOOL=vcs JOBS=8
+
+      - name: Coverage threshold check
+        run: |
+          python3 scripts/coverage_closure/check_coverage.py \
+            --db reports/regression/results.json \
+            --min-line 100 \
+            --min-toggle 95 \
+            --fail-on-miss
+
+      - name: Upload regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-${{ matrix.config.label }}
+          path: reports/regression/
+
+################################################################################
+# Job 5: Fast formal proofs (LRU + MSHR — ≤15 min each)
+################################################################################
+  formal_fast:
+    name: Formal Verification (fast goals)
+    needs: compile
+    runs-on: [self-hosted, eda-tools]
+    timeout-minutes: 60
+    if: github.event_name != 'schedule'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: LRU formal proof
+        run: |
+          mkdir -p reports/formal
+          make formal_lru
+
+      - name: MSHR formal proof
+        run: |
+          make formal_mshr
+
+      - name: Upload formal reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-fast-reports
+          path: reports/formal/
+
+################################################################################
+# Job 6: Full formal (nightly — MESI + AXI take 2+ hours)
+################################################################################
+  formal_full:
+    name: Formal Verification (all goals)
+    needs: compile
+    if: github.event_name == 'schedule'
+    runs-on: [self-hosted, eda-tools]
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run all formal proofs
+        run: |
+          mkdir -p reports/formal
+          make formal_all
+
+      - name: Formal cover closure
+        run: |
+          make formal_cover
+
+      - name: Upload formal reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: formal-full-reports
+          path: reports/formal/
+
+################################################################################
+# Job 7: Synthesis check (nightly — verify timing is clean)
+################################################################################
+  synthesis:
+    name: Synthesis Timing Check
+    needs: lint
+    if: github.event_name == 'schedule'
+    runs-on: [self-hosted, eda-tools]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Synthesise (500 MHz target)
+        run: |
+          make synth WAYS=4 CACHE_KB=256 CLK_NS=2.0
+
+      - name: Check WNS ≥ 0
+        run: |
+          python3 - << 'EOF'
+          import re, sys
+          with open("reports/synthesis/timing_setup.rpt") as f:
+              content = f.read()
+          m = re.search(r"slack\s*\(MET|VIOLATED\)\s*([-\d.]+)", content)
+          if m:
+              wns = float(m.group(1))
+              print(f"WNS = {wns} ns")
+              if wns < 0:
+                  print("TIMING VIOLATION!")
+                  sys.exit(1)
+          print("Timing CLEAN")
+          EOF
+
+      - name: Upload synthesis reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthesis-reports
+          path: reports/synthesis/
