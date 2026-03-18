@@ -1,0 +1,238 @@
+################################################################################
+# File       : constraints/upf/l2_cache.upf
+# Standard   : IEEE 1801-2015 (UPF 3.0)
+# Tool       : Synopsys DC Ultra, Cadence Innovus, Mentor Questa Power Aware
+# Description: Unified Power Format intent for the L2 cache controller.
+#
+# Power domain topology:
+#
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │  PD_ALWAYS_ON   (VDD_AO = 0.75V)                            │
+#   │  • l2_coherency_fsm                                          │
+#   │  • l2_mshr (valid bits + state machine only)                 │
+#   │  • Performance counters                                       │
+#   │  • PMU registers (cache_flush_req, cache_power_down)         │
+#   └─────────────────────────────────────────────────────────────┘
+#
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │  PD_CACHE_LOGIC  (VDD_LOGIC = 0.75V, switchable)            │
+#   │  • l2_request_pipeline                                        │
+#   │  • l2_hit_miss_detect                                         │
+#   │  • l2_lru_controller                                          │
+#   │  • l2_axi_master                                              │
+#   │  • l2_tag_array (tag bits SRAM)                               │
+#   └─────────────────────────────────────────────────────────────┘
+#
+#   ┌─────────────────────────────────────────────────────────────┐
+#   │  PD_DATA_SRAM    (VDD_SRAM = 0.75V, switchable, retention)  │
+#   │  • l2_data_array (multi-bank SRAM macros)                    │
+#   │  Note: SRAM macros have dedicated SD (shutdown) pins          │
+#   └─────────────────────────────────────────────────────────────┘
+#
+# Power states:
+#   ON    — All domains powered, normal operation
+#   SLEEP — PD_CACHE_LOGIC + PD_DATA_SRAM off, PD_ALWAYS_ON on
+#   OFF   — All non-AO domains off (requires flush first)
+################################################################################
+
+################################################################################
+# 1. Supply networks
+################################################################################
+
+# Always-on supply (external regulator — never switched)
+create_supply_net VDD_AO    -domain PD_ALWAYS_ON
+create_supply_net VSS        -domain PD_ALWAYS_ON
+
+# Switchable core logic supply
+create_supply_net VDD_LOGIC  -domain PD_CACHE_LOGIC
+create_supply_net VSS_LOGIC  -domain PD_CACHE_LOGIC
+
+# Switchable SRAM supply (separate for SRAM power sequencing)
+create_supply_net VDD_SRAM   -domain PD_DATA_SRAM
+create_supply_net VSS_SRAM   -domain PD_DATA_SRAM
+
+# Supply ports (from SoC power grid)
+create_supply_port VDD_AO   -direction in
+create_supply_port VDD_SW   -direction in  ;# switched by SoC PMU
+create_supply_port VSS      -direction in
+
+################################################################################
+# 2. Power domains
+################################################################################
+
+# Always-on domain — never powered down
+create_power_domain PD_ALWAYS_ON \
+  -elements {
+    u_coherency
+    u_mshr/mshr_valid_vec
+    u_mshr/mshr_used_count
+    u_mshr/full
+    perf_hit_count
+    perf_miss_count
+    perf_wb_count
+  } \
+  -supply { primary_power  VDD_AO VSS } \
+  -supply { default_isolation VDD_AO VSS }
+
+# Cache control logic domain
+create_power_domain PD_CACHE_LOGIC \
+  -elements {
+    u_req_pipe
+    u_hit_miss
+    u_lru
+    u_tag_array
+    u_axi_master
+    u_mshr/mshr
+    u_mshr/fill_buf
+    u_mshr/wb_buf
+  } \
+  -supply { primary_power VDD_LOGIC VSS_LOGIC }
+
+# Data SRAM domain — separate for SRAM-specific power sequencing
+create_power_domain PD_DATA_SRAM \
+  -elements {
+    u_data_array
+  } \
+  -supply { primary_power VDD_SRAM VSS_SRAM }
+
+################################################################################
+# 3. Supply connections
+################################################################################
+
+set_domain_supply_net PD_ALWAYS_ON  -primary_power_net VDD_AO   -primary_ground_net VSS
+set_domain_supply_net PD_CACHE_LOGIC -primary_power_net VDD_LOGIC -primary_ground_net VSS
+set_domain_supply_net PD_DATA_SRAM  -primary_power_net VDD_SRAM  -primary_ground_net VSS
+
+################################################################################
+# 4. Power switches (MTCMOS header cells)
+################################################################################
+
+# Cache logic power switch — controlled by SoC PMU via cache_power_down
+create_power_switch SW_CACHE_LOGIC \
+  -domain      PD_CACHE_LOGIC \
+  -input_supply_port  { VDD_IN  VDD_SW  } \
+  -output_supply_port { VDD_OUT VDD_LOGIC } \
+  -control_port       { EN !cache_power_down } \
+  -on_state           { on_state  VDD_IN  { EN } } \
+  -off_state          { off_state          { !EN } } \
+  -ack_port           { ACK cache_power_ack }
+
+# SRAM data domain switch — slightly delayed vs logic to allow SRAM sleep first
+create_power_switch SW_DATA_SRAM \
+  -domain      PD_DATA_SRAM \
+  -input_supply_port  { VDD_IN  VDD_SW   } \
+  -output_supply_port { VDD_OUT VDD_SRAM } \
+  -control_port       { EN !cache_power_down } \
+  -on_state           { on_state  VDD_IN  { EN } } \
+  -off_state          { off_state          { !EN } } \
+  -ack_port           { ACK sram_power_ack }
+
+################################################################################
+# 5. Isolation cells
+################################################################################
+# Isolation prevents X/unknown propagation from powered-down domains
+# to always-on domain when power is removed.
+
+# PD_CACHE_LOGIC → PD_ALWAYS_ON boundary isolation
+create_isolation_cell ISO_CACHE_TO_AO \
+  -domain    PD_CACHE_LOGIC \
+  -isolation_supply_net VDD_AO \
+  -clamp_value 0 \
+  -applies_to outputs \
+  -isolation_signal  cache_power_down \
+  -isolation_sense   high \
+  -location    parent
+
+# PD_DATA_SRAM → PD_CACHE_LOGIC boundary isolation
+create_isolation_cell ISO_SRAM_TO_CACHE \
+  -domain    PD_DATA_SRAM \
+  -isolation_supply_net VDD_LOGIC \
+  -clamp_value 0 \
+  -applies_to outputs \
+  -isolation_signal  cache_power_down \
+  -isolation_sense   high \
+  -location    parent
+
+################################################################################
+# 6. Level shifters
+################################################################################
+# All domains operate at same voltage (0.75V) in this implementation.
+# Level shifters required only if voltage domains differ.
+# Placeholder for multi-voltage SoC integration:
+
+# set_level_shifter LS_AO_TO_CACHE \
+#   -domain PD_ALWAYS_ON \
+#   -applies_to inputs \
+#   -input_supply_net  VDD_AO \
+#   -output_supply_net VDD_LOGIC \
+#   -location parent
+
+################################################################################
+# 7. Retention registers
+################################################################################
+# MSHR valid bits and coherency FSM state are retained across power-down
+# so the cache can report correct status to the PMU on wakeup.
+
+set_retention RET_COHERENCY_FSM \
+  -domain    PD_CACHE_LOGIC \
+  -elements  { u_coherency/coh_state } \
+  -save_signal   { cache_power_down posedge } \
+  -restore_signal { cache_power_down negedge }
+
+set_retention RET_MSHR_STATE \
+  -domain    PD_CACHE_LOGIC \
+  -elements  { u_mshr/mshr } \
+  -save_signal   { cache_power_down posedge } \
+  -restore_signal { cache_power_down negedge }
+
+# SRAM deep sleep: handled by SRAM macro SD pin (built-in)
+# Data is NOT retained after full power-down (requires flush first)
+
+################################################################################
+# 8. Power states
+################################################################################
+
+add_power_state PD_ALWAYS_ON \
+  -state ON { -supply_expr {primary_power == {FULL_ON, 0.75} } \
+              -logic_expr  {!cache_power_down} }
+
+add_power_state PD_CACHE_LOGIC \
+  -state ON  { -supply_expr {primary_power == {FULL_ON, 0.75} } } \
+  -state OFF { -supply_expr {primary_power == {OFF} } \
+               -logic_expr  {cache_power_down} }
+
+add_power_state PD_DATA_SRAM \
+  -state ON   { -supply_expr {primary_power == {FULL_ON, 0.75} } } \
+  -state DEEP_SLEEP { -supply_expr {primary_power == {FULL_ON, 0.75} } \
+                       -logic_expr  {cache_power_down} } \
+  -state OFF  { -supply_expr {primary_power == {OFF} } }
+
+# System power state table
+create_pst L2_PST \
+  -supplies { VDD_AO VDD_LOGIC VDD_SRAM }
+
+add_pst_state ACTIVE \
+  -pst L2_PST \
+  -state { VDD_AO:ON  VDD_LOGIC:ON  VDD_SRAM:ON }
+
+add_pst_state SLEEP \
+  -pst L2_PST \
+  -state { VDD_AO:ON  VDD_LOGIC:OFF VDD_SRAM:OFF }
+
+################################################################################
+# 9. Verification directives (for power-aware simulation / PA-Sim)
+################################################################################
+
+# Check that flush completes before power-down
+set_power_switch_sequence \
+  -off { cache_flush_done cache_power_down } \
+  -on  { !cache_power_down cache_power_ack }
+
+# Corrupt model — data domain contents are unknown after power-off
+set_corruption_models \
+  -domains { PD_CACHE_LOGIC PD_DATA_SRAM } \
+  -off_state_values { all_x }
+
+################################################################################
+# End of UPF
+################################################################################

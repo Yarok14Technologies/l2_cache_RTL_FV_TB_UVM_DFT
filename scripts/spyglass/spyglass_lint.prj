@@ -1,0 +1,55 @@
+###############################################################################
+# File       : spyglass_lint.prj
+# Tool       : Synopsys SpyGlass
+# Description: Lint and CDC configuration for L2 cache RTL.
+#              Run: spyglass -project scripts/spyglass/spyglass_lint.prj
+###############################################################################
+
+##set_option projectwdir       reports/spyglass
+##set_option top               l2_cache_top
+
+# ---- Read sources ----
+read_file -type sourcelist       sim/vcs/vcs_filelist.f
+read_file -type sdc              constraints/l2_cache.sdc
+
+# ---- Goal: Lint ----
+current_goal lint/lint_rtl
+
+set_option designread_enable_synthesis yes
+set_option hdl_error_on_latch         yes
+set_option allow_module_override      yes
+
+# Enable all structural rules
+set_rule_on  { W_COND W_CASEZ W_LATCH W_TRUNC W_FLOAT W_NORST }
+set_rule_on  { W_INCOMPLETE_SENSLIST W_MULTIDRIVEN W_COMBLOOP }
+
+# Tool-specific
+set_option sdc_min_period_factor    0.9
+set_option clock_domain_analysis    yes
+
+# ---- Goal: CDC ----
+current_goal cdc/cdc_verify_struct
+
+set_option cdc_flatten_model       yes
+set_option cdc_report_all_status   yes
+
+# Known safe crossings — add waiver comments in RTL with:
+# // spyglass waiver <RULE> <REASON: ticket#>
+
+run_goal
+
+###############################################################################
+# Waiver file
+# Format: waiver -rule RULE -msg "pattern" -comment "JIRA-123: reason"
+###############################################################################
+waiver -rule W_LATCH \
+  -msg "latch_inferred*" \
+  -comment "CACHE-42: Intentional transparent latch for write-merge bypass path. Reviewed."
+
+waiver -rule CDC_SYNC_SIGNAL \
+  -msg "*rst_n*" \
+  -comment "CACHE-18: Reset synchronizer instantiated explicitly in l2_reset_sync.sv"
+
+waiver -rule W_TRUNC \
+  -msg "*perf_hit_count*" \
+  -comment "CACHE-99: 32-bit saturation counter — truncation intentional and benign"

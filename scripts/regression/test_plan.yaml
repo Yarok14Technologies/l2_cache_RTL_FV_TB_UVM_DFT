@@ -1,0 +1,345 @@
+###############################################################################
+# test_plan.yaml — L2 Cache UVM Regression Test Plan
+# Run with: python3 scripts/regression/run_regression.py --plan this_file
+###############################################################################
+
+global:
+  tool:        vcs          # vcs | xcelium
+  default_seeds: 3
+  timeout_s:   1800
+
+tests:
+  # ---------------------------------------------------------------------------
+  # Smoke tests — quick sanity, run first in CI
+  # ---------------------------------------------------------------------------
+  - name:       l2_smoke_read
+    test_class:  l2_smoke_read_test
+    num_seeds:   1
+    tags:        [smoke, ci, regression]
+    plusargs:
+      UVM_VERBOSITY: UVM_MEDIUM
+
+  - name:       l2_smoke_write
+    test_class:  l2_smoke_write_test
+    num_seeds:   1
+    tags:        [smoke, ci, regression]
+
+  # ---------------------------------------------------------------------------
+  # Directed functional tests
+  # ---------------------------------------------------------------------------
+  - name:       l2_read_hit
+    test_class:  l2_read_hit_test
+    num_seeds:   5
+    tags:        [directed, regression]
+    description: "Verify read hit path — data returned in 2 cycles"
+
+  - name:       l2_write_hit
+    test_class:  l2_write_hit_test
+    num_seeds:   5
+    tags:        [directed, regression]
+    description: "Write hit — dirty bit set, MESI→Modified"
+
+  - name:       l2_read_miss_fill
+    test_class:  l2_read_miss_fill_test
+    num_seeds:   5
+    tags:        [directed, regression]
+    description: "Read miss causes fill from L3/DRAM"
+
+  - name:       l2_write_allocate
+    test_class:  l2_write_allocate_test
+    num_seeds:   3
+    tags:        [directed, regression]
+    description: "Write miss triggers line allocation (write-back policy)"
+
+  - name:       l2_eviction_dirty
+    test_class:  l2_eviction_dirty_test
+    num_seeds:   5
+    tags:        [directed, regression]
+    description: "Dirty eviction — write-back issued before fill"
+
+  - name:       l2_eviction_clean
+    test_class:  l2_eviction_clean_test
+    num_seeds:   3
+    tags:        [directed, regression]
+    description: "Clean eviction — no write-back, silent replacement"
+
+  - name:       l2_flush
+    test_class:  l2_flush_test
+    num_seeds:   2
+    tags:        [directed, regression]
+    description: "Software-initiated flush — all dirty lines written back"
+
+  # ---------------------------------------------------------------------------
+  # MESI coherency tests
+  # ---------------------------------------------------------------------------
+  - name:       l2_mesi_exclusive_upgrade
+    test_class:  l2_mesi_exclusive_upgrade_test
+    num_seeds:   5
+    tags:        [coherency, regression]
+    description: "Shared→Modified upgrade request sequence"
+
+  - name:       l2_mesi_snoop_read_shared
+    test_class:  l2_mesi_snoop_read_shared_test
+    num_seeds:   5
+    tags:        [coherency, regression]
+    description: "ReadShared snoop on Modified line — dirty WB + downgrade to S"
+
+  - name:       l2_mesi_snoop_invalidate
+    test_class:  l2_mesi_snoop_invalidate_test
+    num_seeds:   5
+    tags:        [coherency, regression]
+    description: "CleanInvalid snoop — transition any state→Invalid"
+
+  - name:       l2_mesi_snoop_exclusive
+    test_class:  l2_mesi_snoop_exclusive_test
+    num_seeds:   5
+    tags:        [coherency, regression]
+    description: "ReadUnique snoop — M→I with dirty data forwarding"
+
+  - name:       l2_false_sharing
+    test_class:  l2_false_sharing_test
+    num_seeds:   5
+    tags:        [coherency, regression, stress]
+    description: "Two cores writing adjacent words on same cache line"
+    plusargs:
+      ITERATIONS: 200
+
+  - name:       l2_snoop_during_miss
+    test_class:  l2_snoop_during_miss_test
+    num_seeds:   5
+    tags:        [coherency, corner_case]
+    description: "Snoop arrives while fill is in progress for same address"
+
+  # ---------------------------------------------------------------------------
+  # Outstanding transaction / MSHR tests
+  # ---------------------------------------------------------------------------
+  - name:       l2_mshr_full
+    test_class:  l2_mshr_full_test
+    num_seeds:   5
+    tags:        [mshr, regression]
+    description: "Fill MSHR to capacity — verify back-pressure to L1"
+
+  - name:       l2_outstanding_16
+    test_class:  l2_outstanding_16_test
+    num_seeds:   3
+    tags:        [mshr, regression]
+    description: "16 simultaneous outstanding misses"
+
+  - name:       l2_mshr_deallocate
+    test_class:  l2_mshr_deallocate_test
+    num_seeds:   3
+    tags:        [mshr, regression]
+    description: "MSHR entry freed correctly after fill completes"
+
+  # ---------------------------------------------------------------------------
+  # AXI protocol compliance tests
+  # ---------------------------------------------------------------------------
+  - name:       l2_axi_burst_length
+    test_class:  l2_axi_burst_length_test
+    num_seeds:   5
+    tags:        [axi, regression]
+    description: "Burst lengths: 1, 4, 8, 16 — verify RLAST/WLAST timing"
+    plusargs:
+      BURST_LENS: "1,4,8,16"
+
+  - name:       l2_axi_id_reuse
+    test_class:  l2_axi_id_reuse_test
+    num_seeds:   3
+    tags:        [axi, regression]
+    description: "Same AXI ID reuse after completion — verify no ordering bug"
+
+  - name:       l2_axi_exclusive_access
+    test_class:  l2_axi_exclusive_access_test
+    num_seeds:   3
+    tags:        [axi, corner_case]
+    description: "ARLOCK/AWLOCK exclusive access sequences"
+
+  # ---------------------------------------------------------------------------
+  # Corner cases
+  # ---------------------------------------------------------------------------
+  - name:       l2_power_down_wakeup
+    test_class:  l2_power_down_wakeup_test
+    num_seeds:   2
+    tags:        [power, corner_case]
+    description: "Cache power-down then wakeup — verify state restoration"
+
+  - name:       l2_simultaneous_flush_miss
+    test_class:  l2_simultaneous_flush_miss_test
+    num_seeds:   3
+    tags:        [corner_case, stress]
+    description: "Flush request during active miss — verify ordering"
+
+  - name:       l2_same_address_wr_rd
+    test_class:  l2_same_address_wr_rd_test
+    num_seeds:   5
+    tags:        [corner_case, regression]
+    description: "Write immediately followed by read to same address"
+
+  # ---------------------------------------------------------------------------
+  # Constrained random regression
+  # ---------------------------------------------------------------------------
+  - name:       l2_random_light
+    test_class:  l2_random_traffic_test
+    num_seeds:   10
+    tags:        [random, regression]
+    plusargs:
+      NUM_OPS:   100
+      WRITE_PCT: 30
+
+  - name:       l2_random_heavy
+    test_class:  l2_random_traffic_test
+    num_seeds:   10
+    tags:        [random, nightly]
+    plusargs:
+      NUM_OPS:   1000
+      WRITE_PCT: 50
+
+  - name:       l2_random_write_heavy
+    test_class:  l2_random_traffic_test
+    num_seeds:   5
+    tags:        [random, nightly]
+    plusargs:
+      NUM_OPS:   500
+      WRITE_PCT: 80
+
+  # ---------------------------------------------------------------------------
+  # Nightly stress tests (excluded from fast CI)
+  # ---------------------------------------------------------------------------
+  - name:       l2_stress_full
+    test_class:  l2_stress_test
+    num_seeds:   20
+    timeout_s:   3600
+    tags:        [stress, nightly]
+    enabled:     true
+    description: "Long-run stress with full coverage closure"
+
+  # ---------------------------------------------------------------------------
+  # ECC directed tests
+  # ---------------------------------------------------------------------------
+  - name:       l2_ecc_single_bit
+    test_class:  l2_ecc_single_bit_test
+    num_seeds:   5
+    tags:        [ecc, directed, regression]
+    description: "Single-bit ECC error injection — verify correction, RRESP=OKAY"
+
+  - name:       l2_ecc_double_bit
+    test_class:  l2_ecc_double_bit_test
+    num_seeds:   5
+    tags:        [ecc, directed, regression]
+    description: "Double-bit ECC error injection — verify SLVERR response"
+
+  - name:       l2_ecc_no_false_alarm
+    test_class:  l2_ecc_no_false_alarm_test
+    num_seeds:   3
+    tags:        [ecc, regression]
+    description: "64 clean R/W patterns — verify no spurious SLVERR"
+
+  - name:       l2_bist
+    test_class:  l2_bist_test
+    num_seeds:   1
+    tags:        [bist, dft, regression]
+    description: "BIST controller simulation — verify bist_pass=1 on clean netlist"
+
+  # ---------------------------------------------------------------------------
+  # CDC / Power directed tests
+  # ---------------------------------------------------------------------------
+  - name:       l2_cdc_async_fifo
+    test_class:  l2_cdc_async_fifo_test
+    num_seeds:   5
+    tags:        [cdc, regression]
+    description: "Async FIFO CDC correctness under 1:1 to 7:1 frequency ratio"
+
+  - name:       l2_power_flush
+    test_class:  l2_power_flush_test
+    num_seeds:   3
+    tags:        [power, upf, regression]
+    description: "Full flush + power-down + wakeup sequence with WB verification"
+
+  - name:       l2_power_domain_iso
+    test_class:  l2_power_domain_iso_test
+    num_seeds:   1
+    tags:        [power, upf, regression]
+    description: "Isolation cell clamping when PD_CACHE_LOGIC powered down"
+
+  # ---------------------------------------------------------------------------
+  # MESI coherency — dedicated sequences
+  # ---------------------------------------------------------------------------
+  - name:       l2_mesi_all_transitions
+    test_class:  l2_mesi_all_transitions_test
+    num_seeds:   5
+    tags:        [coherency, regression]
+    description: "All 12 MESI legal transitions in order via coherency sequences"
+
+  - name:       l2_mesi_ping_pong
+    test_class:  l2_mesi_ping_pong_test
+    num_seeds:   5
+    tags:        [coherency, stress, regression]
+    description: "Two-core M↔I ping-pong storm (32 iterations)"
+    plusargs:
+      ITERATIONS: 32
+
+  # ---------------------------------------------------------------------------
+  # Performance characterisation
+  # ---------------------------------------------------------------------------
+  - name:       l2_perf_streaming
+    test_class:  l2_perf_streaming_test
+    num_seeds:   1
+    tags:        [performance, nightly]
+    description: "Streaming 512 KB — verifies cold-miss behaviour"
+
+  - name:       l2_perf_working_set
+    test_class:  l2_perf_working_set_test
+    num_seeds:   1
+    tags:        [performance, nightly]
+    description: "128 KB working set × 8 passes — verifies high hit rate"
+
+  - name:       l2_perf_thrashing
+    test_class:  l2_perf_thrashing_test
+    num_seeds:   1
+    tags:        [performance, nightly]
+    description: "340 KB working set — capacity miss characterisation"
+
+  - name:       l2_perf_mixed_rw
+    test_class:  l2_perf_mixed_rw_test
+    num_seeds:   3
+    tags:        [performance, regression]
+    description: "70/30 read/write mix with latency histogram"
+
+  # ---------------------------------------------------------------------------
+  # Write allocate + same-address + clean eviction
+  # ---------------------------------------------------------------------------
+  - name:       l2_write_allocate
+    test_class:  l2_write_allocate_test
+    num_seeds:   5
+    tags:        [directed, regression]
+    description: "Write miss → RFO fill → write applied → read-back verifies"
+
+  - name:       l2_eviction_clean
+    test_class:  l2_eviction_clean_test
+    num_seeds:   3
+    tags:        [directed, regression]
+    description: "5 fills into 4-way set → silent clean eviction (no WB)"
+
+  - name:       l2_same_address_wr_rd
+    test_class:  l2_same_address_wr_rd_test
+    num_seeds:   5
+    tags:        [directed, regression, corner_case]
+    description: "Write then immediate read of same address — no stale data"
+
+  - name:       l2_snoop_during_miss
+    test_class:  l2_snoop_during_miss_test
+    num_seeds:   3
+    tags:        [coherency, corner_case]
+    description: "Snoop arrives while fill for same line is in-flight"
+
+  - name:       l2_simultaneous_flush_miss
+    test_class:  l2_simultaneous_flush_miss_test
+    num_seeds:   3
+    tags:        [corner_case, stress]
+    description: "Flush asserted during outstanding miss — ordering verified"
+
+  - name:       l2_mshr_deallocate
+    test_class:  l2_mshr_deallocate_test
+    num_seeds:   5
+    tags:        [mshr, regression]
+    description: "MSHR entries freed after fill completes — no leak"
