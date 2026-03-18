@@ -1,0 +1,87 @@
+# Build artifacts
+work/
+netlist/
+reports/
+logs/
+csrc/
+simv*
+ucli.key
+vc_hdrs.h
+.vcs_lib_lock
+
+# Waveforms
+*.vcd
+*.fsdb
+*.vpd
+*.shm/
+
+# Questa/ModelSim
+transcript
+vsim.wlf
+*.wlf
+
+# Synopsys DC
+*.pvl
+*.syn
+*.mr
+*.log
+command.log
+default.svf
+mapped/
+unmapped/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Editor
+*.swp
+*.swo
+.DS_Store
+*.orig
+*.bak
+
+# Regression output (keep YAML plans, not run artifacts)
+work/regression/
+work/single/
+
+# Keep empty directories
+!work/.gitkeep
+!reports/.gitkeep
+!netlist/.gitkeep
+
+# Reports directory keep-files
+reports/**/.gitkeep
+
+# waves dir
+waves/
+
+# Generated ATPG patterns (checked-in stubs only)
+dft/patterns/l2_stuck_at.stil
+dft/patterns/l2_transition.stil
+dft/patterns/l2_patterns.v
+dft/patterns/*.stil.gz
+
+# TetraMAX work dir
+tmax_work/
+*.tmax.log
+
+# GLS artefacts
+sim/vcs/gls_csrc/
+sim/vcs/gls_sim*
+reports/dft/*.log
+
+# JasperGold formal artifacts
+.jgproject/
+jgproject/
+*.jdb
+*.jdb.bak
+reports/formal/*.log
+reports/formal/*.rpt
+!reports/formal/.gitkeep
+
+# Questa Formal
+qverify_work/
+*.qvwork
